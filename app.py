@@ -7,7 +7,7 @@ st.set_page_config(
 )
 
 st.title("⚙️ MechXcel Engineering Utility")
-st.caption("Streamlit deployment test | Python application")
+st.caption("Live deployment test | Python application")
 
 st.success("If you can see this page, deployment is working!")
 
