@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 
 COLORS = {"None": "#ff0000", "Root weld": "#ff8c00", "Root PT": "#ffff00", "Final weld": "#f2a2e8", "Final PT": "#50b84a"}
-ORIGINAL_ROWS = [8, 15, 18, 21, 24, 25, 26, 27, 28, 29, 29, 30, 29, 29, 28, 27, 26, 25, 24, 21, 18, 15, 8]
+ORIGINAL_ROWS = [8, 15, 18, 21, 24, 25, 26, 27, 28, 29, 30, 30, 30, 29, 28, 27, 26, 25, 24, 21, 18, 15, 8]
 
 
 def defaults():
-    return {"rows": [8, 15, 18, 21, 24, 25, 26, 27, 28, 29, 29, 30, 29, 29, 28, 27, 26, 25, 24, 21, 18, 15, 8], "tube_od": 25.4, "statuses": {}}
+    return {"rows": [8, 15, 18, 21, 24, 25, 26, 27, 28, 29, 30, 30, 30, 29, 28, 27, 26, 25, 24, 21, 18, 15, 8], "tube_od": 25.4, "statuses": {}}
 
 
 def run():
