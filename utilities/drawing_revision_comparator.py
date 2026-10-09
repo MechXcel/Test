@@ -26,7 +26,77 @@ def _line_key(line: str) -> str:
     return _normalize_line(line).casefold()
 
 
-def _extract_pdf(uploaded_file: Any, use_ocr: bool = False, ocr_language: str = "eng", ocr_dpi: int = 300) -> dict[str, Any]:
+def _rapidocr_lines(page, dpi: int = 300):
+    """OCR a PDF page with RapidOCR, returning text lines and an optional error.
+
+    RapidOCR is imported lazily so native-text comparison remains available if OCR
+    is disabled. It uses ONNX Runtime models distributed with rapidocr-onnxruntime;
+    no separate Tesseract executable or language-data installation is required.
+    """
+    try:
+        import numpy as np
+        from rapidocr_onnxruntime import RapidOCR
+
+        # Cache the engine between pages/reruns where Streamlit's resource cache is available.
+        engine = _get_rapidocr_engine()
+        scale = dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        # PyMuPDF supplies RGB; RapidOCR/OpenCV image inputs conventionally use BGR.
+        if pix.n >= 3:
+            image = image[:, :, :3][:, :, ::-1].copy()
+        result = engine(image)
+        detections = result[0] if isinstance(result, tuple) else result
+        if not detections:
+            return [], ""
+
+        # Each detection is typically [quadrilateral, text, confidence]. Group detections
+        # on nearby baselines so the comparison operates on drawing text lines, not words.
+        boxes = []
+        for item in detections:
+            if not item or len(item) < 2:
+                continue
+            box, text = item[0], _normalize_line(str(item[1]))
+            if not text:
+                continue
+            ys = [float(pt[1]) for pt in box]
+            xs = [float(pt[0]) for pt in box]
+            height = max(1.0, max(ys) - min(ys))
+            boxes.append({"y": sum(ys) / len(ys), "x": min(xs), "h": height, "text": text})
+        boxes.sort(key=lambda b: (b["y"], b["x"]))
+        grouped = []
+        for item in boxes:
+            # Use a modest baseline tolerance; do not aggressively merge adjacent rows.
+            best_group = None
+            best_dist = None
+            for group in grouped[-4:]:
+                group_y = sum(x["y"] for x in group) / len(group)
+                tolerance = max(8.0, 0.45 * max(item["h"], sum(x["h"] for x in group) / len(group)))
+                dist = abs(item["y"] - group_y)
+                if dist <= tolerance and (best_dist is None or dist < best_dist):
+                    best_group, best_dist = group, dist
+            if best_group is None:
+                grouped.append([item])
+            else:
+                best_group.append(item)
+        lines = []
+        for group in grouped:
+            group.sort(key=lambda b: b["x"])
+            line = _normalize_line(" ".join(x["text"] for x in group))
+            if line:
+                lines.append(line)
+        return lines, ""
+    except Exception as exc:
+        return [], f"RapidOCR error: {exc}"
+
+
+@st.cache_resource(show_spinner=False)
+def _get_rapidocr_engine():
+    from rapidocr_onnxruntime import RapidOCR
+    return RapidOCR()
+
+
+def _extract_pdf(uploaded_file: Any, use_ocr: bool = False, ocr_language: str = "en", ocr_dpi: int = 300) -> dict[str, Any]:
     raw = uploaded_file.getvalue()
     if len(raw) > MAX_FILE_BYTES:
         raise ValueError("File exceeds the 100 MB limit.")
@@ -41,29 +111,22 @@ def _extract_pdf(uploaded_file: Any, use_ocr: bool = False, ocr_language: str = 
             raise ValueError(f"PDF contains more than {MAX_PAGES} pages.")
         pages = []
         for n, page in enumerate(doc, 1):
-            raw_text = page.get_text("text", sort=True) or ""
-            native_lines = [_normalize_line(x) for x in raw_text.splitlines()]
+            native_text = page.get_text("text", sort=True) or ""
+            native_lines = [_normalize_line(x) for x in native_text.splitlines()]
             native_lines = [x for x in native_lines if x]
-            # OCR can recover text drawn into page images or converted to raster.
-            # It requires the Tesseract executable and trained language data on the host.
             ocr_used = False
             ocr_error = ""
-            needs_ocr = not raw_text.strip() or len("".join(native_lines)) < 35
+            needs_ocr = not native_text.strip() or len("".join(native_lines)) < 35
             lines = native_lines
+            extracted_text = native_text
             if use_ocr and needs_ocr:
-                try:
-                    text_page = page.get_textpage_ocr(language=ocr_language, dpi=ocr_dpi, full=True)
-                    ocr_text = page.get_text("text", textpage=text_page, sort=True) or ""
-                    ocr_lines = [_normalize_line(x) for x in ocr_text.splitlines()]
-                    ocr_lines = [x for x in ocr_lines if x]
-                    if ocr_lines:
-                        lines = ocr_lines
-                        raw_text = ocr_text
-                        ocr_used = True
-                except Exception as exc:
-                    ocr_error = str(exc)
-            pages.append({"page": n, "text": raw_text, "lines": lines,
-                          "is_textual": bool(raw_text.strip()),
+                ocr_lines, ocr_error = _rapidocr_lines(page, dpi=ocr_dpi)
+                if ocr_lines:
+                    lines = ocr_lines
+                    extracted_text = "\n".join(ocr_lines)
+                    ocr_used = True
+            pages.append({"page": n, "text": extracted_text, "lines": lines,
+                          "is_textual": bool(extracted_text.strip()),
                           "native_textual": bool(native_lines), "ocr_used": ocr_used,
                           "ocr_attempted": bool(use_ocr and needs_ocr), "ocr_error": ocr_error,
                           "width": round(page.rect.width, 2), "height": round(page.rect.height, 2)})
@@ -238,7 +301,7 @@ def _build_review_items(changes, old_doc, new_doc):
                   (f"Page count differs ({len(old_doc['pages'])} original vs {len(new_doc['pages'])} revised). " if page_count_diff else "") +
                   (f"{len(ocr_pages)} page(s) used OCR; verify recognized characters and dimensions against the page image. " if ocr_pages else "") +
                   (f"{len(unreadable_pages)} page(s) still have no extractable text. " if unreadable_pages else "") +
-                  (f"OCR failed on {len(ocr_errors)} page(s); inspect these pages manually and ensure Tesseract/language data are installed. " if ocr_errors else "") +
+                  (f"OCR failed on {len(ocr_errors)} page(s); inspect these pages manually and check the RapidOCR package/model initialization. " if ocr_errors else "") +
                   "Confirm sheet numbering, inserts/deletions, and manually inspect scanned or low-text pages.", "High"),
         make_item("Referenced documents and cross-discipline impacts", any_changes,
                   "Text differences were detected. Check referenced specifications, calculations, related drawings, lists and dependent documents for consistency.", "High"),
@@ -310,16 +373,16 @@ def run():
         new_file = st.file_uploader("Revised / current revision (PDF)", type=["pdf"], key="dr_new")
     include_revision = st.checkbox("Include heuristic revision-table comparison", value=True)
     use_ocr = st.checkbox("Run OCR on scanned/image-based or low-text pages", value=True,
-                          help="Requires Tesseract OCR and English language data installed on the machine running Streamlit.")
-    ocr_language = st.text_input("Tesseract language code(s)", value="eng", disabled=not use_ocr,
-                                 help="Examples: eng or eng+deu. Install the matching Tesseract language data first.")
+                          help="Uses RapidOCR with ONNX Runtime. The rapidocr-onnxruntime package must be in requirements.txt; model files may be downloaded on first use depending on package version.")
+    ocr_dpi = st.slider("OCR rendering resolution (DPI)", min_value=150, max_value=400, value=300, step=50, disabled=not use_ocr,
+                        help="Higher DPI may improve small text recognition but uses more memory and processing time.")
     if st.button("Compare drawings", type="primary", use_container_width=True):
         if old_file is None or new_file is None:
             st.error("Upload both the original and revised PDF drawings."); return
         with st.spinner("Extracting PDF text and comparing pages..."):
             try:
-                old_doc = _extract_pdf(old_file, use_ocr=use_ocr, ocr_language=ocr_language.strip() or "eng")
-                new_doc = _extract_pdf(new_file, use_ocr=use_ocr, ocr_language=ocr_language.strip() or "eng")
+                old_doc = _extract_pdf(old_file, use_ocr=use_ocr, ocr_dpi=ocr_dpi)
+                new_doc = _extract_pdf(new_file, use_ocr=use_ocr, ocr_dpi=ocr_dpi)
                 changes, page_summary = compare_documents(old_doc, new_doc, include_revision)
                 checklist = _build_review_items(changes, old_doc, new_doc)
                 st.session_state["dr_result"] = {"old_doc":old_doc,"new_doc":new_doc,"changes":changes,"page_summary":page_summary,"checklist":checklist}
@@ -344,7 +407,7 @@ def run():
     if ocr_used_pages:
         st.info(f"OCR was used on {len(ocr_used_pages)} page(s). Review OCR-recognized dimensions, decimal points, minus signs, diameter symbols and material identifiers manually.")
     if ocr_failed_pages:
-        st.error(f"OCR failed on {len(ocr_failed_pages)} page(s). Check that Tesseract and the selected language data are installed; manually inspect these pages.")
+        st.error(f"OCR failed on {len(ocr_failed_pages)} page(s). Check that rapidocr-onnxruntime is installed and its OCR models initialize correctly; manually inspect these pages.")
     st.caption(f"Original: {old_doc['name']} · Revised: {new_doc['name']}")
     st.subheader("Page-by-page comparison"); st.dataframe(page_summary,use_container_width=True,hide_index=True)
     st.subheader("Detected changes")
@@ -371,7 +434,7 @@ def run():
     x.download_button("Download HTML report",html_report.encode("utf-8"),"drawing_revision_report.html","text/html",use_container_width=True)
     y.download_button("Download PDF report",pdf_report,"drawing_revision_report.pdf","application/pdf",use_container_width=True)
     with st.expander("Text extraction diagnostics"):
-        st.write("PyMuPDF extracts native PDF text. Optional OCR uses the installed Tesseract engine on pages with no or very little native text. Revision-table detection is keyword-based and may include nearby notes. The comparison is order-independent for text lines but still does not compare drawing geometry.")
+        st.write("PyMuPDF extracts native PDF text. Optional OCR uses RapidOCR/ONNX Runtime on pages with no or very little native text. Revision-table detection is keyword-based and may include nearby notes. The comparison is order-independent for text lines but still does not compare drawing geometry.")
         diag=[]
         for label,doc in [("Original",old_doc),("Revised",new_doc)]:
             for p in doc["pages"]:
