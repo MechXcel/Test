@@ -52,12 +52,18 @@ def run():
         fill="toself",
         name="Cutout Profile",
     ))
+
     fig.update_layout(
         height=480,
         xaxis_title="X",
         yaxis_title="Y",
         showlegend=False,
+        xaxis=dict(
+            scaleanchor="y",
+            scaleratio=1,
+        ),
     )
+    
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("#### Spline coordinates")
