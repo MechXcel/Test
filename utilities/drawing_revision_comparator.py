@@ -26,7 +26,7 @@ def _line_key(line: str) -> str:
     return _normalize_line(line).casefold()
 
 
-def _extract_pdf(uploaded_file: Any) -> dict[str, Any]:
+def _extract_pdf(uploaded_file: Any, use_ocr: bool = False, ocr_language: str = "eng", ocr_dpi: int = 300) -> dict[str, Any]:
     raw = uploaded_file.getvalue()
     if len(raw) > MAX_FILE_BYTES:
         raise ValueError("File exceeds the 100 MB limit.")
@@ -42,10 +42,30 @@ def _extract_pdf(uploaded_file: Any) -> dict[str, Any]:
         pages = []
         for n, page in enumerate(doc, 1):
             raw_text = page.get_text("text", sort=True) or ""
-            lines = [_normalize_line(x) for x in raw_text.splitlines()]
-            lines = [x for x in lines if x]
+            native_lines = [_normalize_line(x) for x in raw_text.splitlines()]
+            native_lines = [x for x in native_lines if x]
+            # OCR can recover text drawn into page images or converted to raster.
+            # It requires the Tesseract executable and trained language data on the host.
+            ocr_used = False
+            ocr_error = ""
+            needs_ocr = not raw_text.strip() or len("".join(native_lines)) < 35
+            lines = native_lines
+            if use_ocr and needs_ocr:
+                try:
+                    text_page = page.get_textpage_ocr(language=ocr_language, dpi=ocr_dpi, full=True)
+                    ocr_text = page.get_text("text", textpage=text_page, sort=True) or ""
+                    ocr_lines = [_normalize_line(x) for x in ocr_text.splitlines()]
+                    ocr_lines = [x for x in ocr_lines if x]
+                    if ocr_lines:
+                        lines = ocr_lines
+                        raw_text = ocr_text
+                        ocr_used = True
+                except Exception as exc:
+                    ocr_error = str(exc)
             pages.append({"page": n, "text": raw_text, "lines": lines,
                           "is_textual": bool(raw_text.strip()),
+                          "native_textual": bool(native_lines), "ocr_used": ocr_used,
+                          "ocr_attempted": bool(use_ocr and needs_ocr), "ocr_error": ocr_error,
                           "width": round(page.rect.width, 2), "height": round(page.rect.height, 2)})
         meta = doc.metadata or {}
         return {"name": getattr(uploaded_file, "name", "drawing.pdf"), "pages": pages,
@@ -83,16 +103,32 @@ def _pair_changes(removed, added, scope, old_page, new_page):
 
 
 def _compare_lines(old_lines, new_lines, scope, old_page, new_page):
-    matcher = difflib.SequenceMatcher(None, [_line_key(x) for x in old_lines],
-                                      [_line_key(x) for x in new_lines], autojunk=False)
-    changes = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-        removed = [(i + 1, old_lines[i]) for i in range(i1, i2)]
-        added = [(j + 1, new_lines[j]) for j in range(j1, j2)]
-        changes.extend(_pair_changes(removed, added, scope, old_page, new_page))
-    return changes
+    """Compare line multisets first, then fuzzy-pair leftovers.
+
+    Unlike a positional sequence diff, this is resilient to PDF text-order changes
+    caused by different text blocks, font encodings, or extraction order. Repeated
+    identical lines are counted rather than silently collapsed.
+    """
+    old_by_key = {}
+    new_by_key = {}
+    for i, line in enumerate(old_lines, 1):
+        old_by_key.setdefault(_line_key(line), []).append((i, line))
+    for i, line in enumerate(new_lines, 1):
+        new_by_key.setdefault(_line_key(line), []).append((i, line))
+
+    removed, added = [], []
+    all_keys = set(old_by_key) | set(new_by_key)
+    for key in all_keys:
+        old_items = list(old_by_key.get(key, []))
+        new_items = list(new_by_key.get(key, []))
+        common = min(len(old_items), len(new_items))
+        removed.extend(old_items[common:])
+        added.extend(new_items[common:])
+
+    # Stable ordering makes reports easier to review. Pair similar leftovers as edits.
+    removed.sort(key=lambda x: x[0])
+    added.sort(key=lambda x: x[0])
+    return _pair_changes(removed, added, scope, old_page, new_page)
 
 
 _REV_KEYWORDS = re.compile(r"\b(rev(?:ision)?|revision history|description of change|change description|drawn by|checked by|approved by|date|ec[no]|ecr|issue)\b", re.I)
@@ -147,22 +183,76 @@ def compare_documents(old_doc, new_doc, compare_revision_tables=True):
 
 
 def _build_review_items(changes, old_doc, new_doc):
+    """Auto-populate a review matrix using observed differences and extraction limits.
+
+    The statuses are heuristic triage, not engineering approval or proof that an
+    item did not change. Every row remains subject to reviewer verification.
+    """
+    combined = "\n".join(
+        str(value) for col in ("Original Text", "Revised Text")
+        for value in (changes[col].tolist() if not changes.empty and col in changes else [])
+    ).casefold()
+    page_count_diff = len(old_doc["pages"]) != len(new_doc["pages"])
+    all_pages = old_doc["pages"] + new_doc["pages"]
+    unreadable_pages = [p for p in all_pages if not p["is_textual"]]
+    ocr_pages = [p for p in all_pages if p.get("ocr_used")]
+    ocr_errors = [p for p in all_pages if p.get("ocr_error")]
+    low_text_pages = [p for p in all_pages if not p.get("native_textual", p["is_textual"])]
+    any_changes = not changes.empty
+
+    def make_item(topic, trigger, reason, priority="Routine"):
+        triggered = bool(trigger)
+        return {
+            "Review Point": topic,
+            "Application Assessment": "MANUAL REVIEW REQUIRED" if triggered else "No text trigger detected",
+            "Priority": priority if triggered else "Normal",
+            "Why flagged / guidance": reason if triggered else "No matching textual change was detected. Verify visually; absence of a text trigger does not prove this item is unchanged.",
+            "Auto-filled": "Yes — heuristic",
+        }
+
+    dimension_trigger = bool(re.search(r"(?:\b(?:dia(?:meter)?|ø|\+/-|±|tolerance|thk|thickness|pitch|radius|\br\b|\bmm\b|\bin\b)\b|\d+(?:\.\d+)?\s*(?:mm|cm|m|in|inch|°))", combined)) and any_changes
+    material_trigger = bool(re.search(r"\b(?:material|astm|asme|sa-?\d+|a-?\d{3}|grade|specification|moc|p-number|pno)\b", combined)) and any_changes
+    weld_trigger = bool(re.search(r"\b(?:weld|welding|nde|ndt|rt|ut|pt|mt|pwht|heat treatment|weld map)\b", combined)) and any_changes
+    pressure_trigger = bool(re.search(r"\b(?:pressure|hydrotest|hydrostatic|design temperature|design pressure|operating temperature|operating pressure|bar|mpa|psi)\b", combined)) and any_changes
+    bom_trigger = bool(re.search(r"\b(?:bom|bill of materials|part no|part number|item no|quantity|qty|weight)\b", combined)) and any_changes
+    revision_trigger = bool(re.search(r"\b(?:revision|rev\.?|revision history|description of change|ec[no]|ecr|issue date)\b", combined)) and any_changes
+
     items = [
-        "Confirm drawing number, title, revision and issue date in both title blocks.",
-        "Review every detected text change against the actual drawing and project requirements.",
-        "Verify dimensions, tolerances, units, material grades and pressure/temperature data.",
-        "Check weld symbols, NDE requirements, PWHT notes and inspection/test requirements.",
-        "Confirm revision clouds, delta symbols and revision-table entries are consistent.",
-        "Check affected views, sections, details, BOMs and referenced documents.",
-        "Confirm every page was reviewed; investigate pages with no extractable text.",
-        "Record reviewer, review date and disposition before approving the revised drawing.",
+        make_item("Drawing number, title, revision and issue date", revision_trigger or page_count_diff,
+                  "A revision/title-block-like text change or page-count mismatch was detected. Compare title blocks and release metadata directly.", "High"),
+        make_item("Dimensions, tolerances, units and geometric callouts", dimension_trigger,
+                  "Changed text appears to contain dimension/unit terminology. Verify each value, tolerance, unit, datum and affected view against the drawing.", "High"),
+        make_item("Material grades and specifications", material_trigger,
+                  "Changed text appears to reference material or specification identifiers. Verify grade, material specification, condition and traceability requirements.", "High"),
+        make_item("Weld details, NDE and PWHT requirements", weld_trigger,
+                  "Changed text appears to reference welding or examination. Verify weld symbols, extent, method, acceptance criteria and heat-treatment notes.", "High"),
+        make_item("Design/operating pressure and temperature", pressure_trigger,
+                  "Changed text appears to reference pressure or temperature. Verify design basis, units, ratings and related calculations/documents.", "High"),
+        make_item("BOM, part numbers and quantities", bom_trigger,
+                  "Changed text appears to reference parts, quantities or BOM entries. Verify part identity, quantity, material and downstream procurement/fabrication impact.", "High"),
+        make_item("Revision table and revision markers", revision_trigger,
+                  "Revision-related text was changed or added/deleted. Confirm revision sequence, change description, date, approval and matching drawing markers.", "High"),
+        make_item("Views, sections, details, symbols and graphical geometry", True,
+                  "V1 compares extractable text only and does not inspect linework, symbols, revision clouds or geometry. Compare every view and detail visually.", "High"),
+        make_item("Page completeness and scan/OCR quality", page_count_diff or bool(unreadable_pages) or bool(ocr_pages) or bool(ocr_errors) or bool(low_text_pages),
+                  (f"Page count differs ({len(old_doc['pages'])} original vs {len(new_doc['pages'])} revised). " if page_count_diff else "") +
+                  (f"{len(ocr_pages)} page(s) used OCR; verify recognized characters and dimensions against the page image. " if ocr_pages else "") +
+                  (f"{len(unreadable_pages)} page(s) still have no extractable text. " if unreadable_pages else "") +
+                  (f"OCR failed on {len(ocr_errors)} page(s); inspect these pages manually and ensure Tesseract/language data are installed. " if ocr_errors else "") +
+                  "Confirm sheet numbering, inserts/deletions, and manually inspect scanned or low-text pages.", "High"),
+        make_item("Referenced documents and cross-discipline impacts", any_changes,
+                  "Text differences were detected. Check referenced specifications, calculations, related drawings, lists and dependent documents for consistency.", "High"),
+        make_item("Reviewer disposition and release approval", True,
+                  "Application-generated flags are advisory. A qualified reviewer must record disposition and follow the project's approval/release process.", "Required"),
     ]
-    if len(old_doc["pages"]) != len(new_doc["pages"]):
-        items.insert(1, "Resolve the page-count difference and verify inserted/deleted pages.")
-    if any(not p["is_textual"] for p in old_doc["pages"] + new_doc["pages"]):
-        items.insert(2, "One or more pages have no extractable text (possibly scanned); text comparison is incomplete.")
-    if changes.empty:
-        items.insert(0, "No textual differences were detected. This does not establish that the drawings are identical.")
+    if not any_changes:
+        items.insert(0, {
+            "Review Point": "No textual differences detected",
+            "Application Assessment": "MANUAL REVIEW REQUIRED",
+            "Priority": "High",
+            "Why flagged / guidance": "No text differences were detected, but graphical changes, scanned content, reordered text and extraction failures can be missed. Do not treat this as proof that drawings are identical.",
+            "Auto-filled": "Yes — comparison result",
+        })
     return items
 
 
@@ -170,13 +260,14 @@ def _make_html_report(changes, pages, checklist, old_doc, new_doc):
     def table(df):
         return "<p>No entries.</p>" if df.empty else df.to_html(index=False, escape=True, border=0, classes="data")
     counts = Counter(changes["Change Type"]) if not changes.empty else Counter()
-    checks = "".join(f"<li>{html.escape(item)}</li>" for item in checklist)
+    checklist_df = pd.DataFrame(checklist)
+    checks = "<p>No checklist items.</p>" if checklist_df.empty else checklist_df.to_html(index=False, escape=True, border=0, classes="data")
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><title>MechXcel Drawing Revision Comparison</title>
 <style>body{{font-family:Arial,sans-serif;max-width:1200px;margin:32px auto;padding:0 20px;color:#18212b}}h1{{color:#123b59}}table{{border-collapse:collapse;width:100%;font-size:12px;margin:12px 0 28px}}th,td{{border:1px solid #ccd5dd;padding:7px;text-align:left;vertical-align:top;overflow-wrap:anywhere}}th{{background:#eaf1f6}}li{{margin:8px 0}}.note{{background:#fff4d6;padding:12px;border-left:4px solid #d49a18}}</style></head><body>
 <h1>MechXcel Engineering Drawing Revision Comparator</h1><p>Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} · V1 text-based comparison</p>
 <div class="note"><b>Important:</b> This report compares extractable PDF text only. It does not verify graphical geometry or guarantee detection of every engineering change. Human review is required.</div>
 <h2>Documents</h2><ul><li>Original: {html.escape(old_doc['name'])} ({len(old_doc['pages'])} pages)</li><li>Revised: {html.escape(new_doc['name'])} ({len(new_doc['pages'])} pages)</li></ul>
-<h2>Summary</h2><p>Modified: {counts.get('Modified',0)} · Added: {counts.get('Added',0)} · Deleted: {counts.get('Deleted',0)}</p><h2>Page-by-page summary</h2>{table(pages)}<h2>Detected text changes</h2>{table(changes)}<h2>Engineering review checklist</h2><ul>{checks}</ul><p>Prepared by Himanshu Bhatt · MechXcel · https://oss.mechxcel.in</p></body></html>'''
+<h2>Summary</h2><p>Modified: {counts.get('Modified',0)} · Added: {counts.get('Added',0)} · Deleted: {counts.get('Deleted',0)}</p><h2>Page-by-page summary</h2>{table(pages)}<h2>Detected text changes</h2>{table(changes)}<h2>Auto-filled engineering review checklist</h2>{checks}<p>Prepared by Himanshu Bhatt · MechXcel · https://oss.mechxcel.in</p></body></html>'''
 
 
 def _make_pdf_report(changes, pages, checklist, old_doc, new_doc):
@@ -201,9 +292,9 @@ def _make_pdf_report(changes, pages, checklist, old_doc, new_doc):
     add_table(pages)
     story += [Spacer(1, 4*mm), Paragraph("Detected text changes", styles["Heading2"])]
     add_table(changes)
-    story += [PageBreak(), Paragraph("Engineering review checklist", styles["Heading2"])]
-    for item in checklist:
-        story += [Paragraph("&#9744; " + html.escape(item), styles["BodyText"]), Spacer(1, 2*mm)]
+    story += [PageBreak(), Paragraph("Auto-filled engineering review checklist", styles["Heading2"])]
+    add_table(pd.DataFrame(checklist))
+    story += [Spacer(1, 2*mm), Paragraph("Assessments are heuristic prompts for manual review, not confirmation of compliance or unchanged status.", styles["BodyText"])]
     story += [Spacer(1, 4*mm), Paragraph("Prepared by Himanshu Bhatt · MechXcel · oss.mechxcel.in", styles["Normal"])]
     doc.build(story)
     return buf.getvalue()
@@ -218,12 +309,17 @@ def run():
     with right:
         new_file = st.file_uploader("Revised / current revision (PDF)", type=["pdf"], key="dr_new")
     include_revision = st.checkbox("Include heuristic revision-table comparison", value=True)
+    use_ocr = st.checkbox("Run OCR on scanned/image-based or low-text pages", value=True,
+                          help="Requires Tesseract OCR and English language data installed on the machine running Streamlit.")
+    ocr_language = st.text_input("Tesseract language code(s)", value="eng", disabled=not use_ocr,
+                                 help="Examples: eng or eng+deu. Install the matching Tesseract language data first.")
     if st.button("Compare drawings", type="primary", use_container_width=True):
         if old_file is None or new_file is None:
             st.error("Upload both the original and revised PDF drawings."); return
         with st.spinner("Extracting PDF text and comparing pages..."):
             try:
-                old_doc, new_doc = _extract_pdf(old_file), _extract_pdf(new_file)
+                old_doc = _extract_pdf(old_file, use_ocr=use_ocr, ocr_language=ocr_language.strip() or "eng")
+                new_doc = _extract_pdf(new_file, use_ocr=use_ocr, ocr_language=ocr_language.strip() or "eng")
                 changes, page_summary = compare_documents(old_doc, new_doc, include_revision)
                 checklist = _build_review_items(changes, old_doc, new_doc)
                 st.session_state["dr_result"] = {"old_doc":old_doc,"new_doc":new_doc,"changes":changes,"page_summary":page_summary,"checklist":checklist}
@@ -239,8 +335,16 @@ def run():
     counts = Counter(changes["Change Type"]) if not changes.empty else Counter()
     st.divider(); st.subheader("Comparison summary")
     a,b,c,d = st.columns(4); a.metric("Modified entries",counts.get("Modified",0)); b.metric("Added entries",counts.get("Added",0)); c.metric("Deleted entries",counts.get("Deleted",0)); d.metric("Pages compared",len(page_summary))
-    if any(not p["is_textual"] for p in old_doc["pages"] + new_doc["pages"]):
-        st.error("At least one page has no extractable text. Text comparison is incomplete; inspect these pages manually.")
+    all_pages = old_doc["pages"] + new_doc["pages"]
+    no_text = [p for p in all_pages if not p["is_textual"]]
+    ocr_used_pages = [p for p in all_pages if p.get("ocr_used")]
+    ocr_failed_pages = [p for p in all_pages if p.get("ocr_error")]
+    if no_text:
+        st.error(f"{len(no_text)} page(s) still have no extractable text. Manual visual comparison is required for those pages.")
+    if ocr_used_pages:
+        st.info(f"OCR was used on {len(ocr_used_pages)} page(s). Review OCR-recognized dimensions, decimal points, minus signs, diameter symbols and material identifiers manually.")
+    if ocr_failed_pages:
+        st.error(f"OCR failed on {len(ocr_failed_pages)} page(s). Check that Tesseract and the selected language data are installed; manually inspect these pages.")
     st.caption(f"Original: {old_doc['name']} · Revised: {new_doc['name']}")
     st.subheader("Page-by-page comparison"); st.dataframe(page_summary,use_container_width=True,hide_index=True)
     st.subheader("Detected changes")
@@ -250,19 +354,26 @@ def run():
         selected = st.selectbox("Filter changes",["All","Modified","Added","Deleted"])
         st.dataframe(changes if selected=="All" else changes[changes["Change Type"]==selected],use_container_width=True,hide_index=True)
         st.download_button("Download change register (CSV)",changes.to_csv(index=False).encode("utf-8-sig"),"drawing_revision_changes.csv","text/csv")
-    st.subheader("Engineering review checklist")
-    checked = [st.checkbox(item,key=f"dr_check_{i}") for i,item in enumerate(checklist)]
-    st.caption(f"Checklist completed: {sum(checked)} of {len(checked)}")
-    checklist_report = [("[x] " if yes else "[ ] ")+item for yes,item in zip(checked,checklist)]
-    html_report = _make_html_report(changes,page_summary,checklist_report,old_doc,new_doc)
-    pdf_report = _make_pdf_report(changes,page_summary,checklist_report,old_doc,new_doc)
+    st.subheader("Auto-filled engineering review checklist")
+    st.caption("The application assesses likely review areas from detected text changes and PDF extraction diagnostics. These are heuristic recommendations; a reviewer must verify the actual drawings.")
+    checklist_df = pd.DataFrame(checklist)
+    manual_only = st.checkbox("Show only points recommended for manual review", value=True, key="dr_manual_only")
+    if manual_only:
+        checklist_view = checklist_df[checklist_df["Application Assessment"] == "MANUAL REVIEW REQUIRED"]
+    else:
+        checklist_view = checklist_df
+    st.dataframe(checklist_view, use_container_width=True, hide_index=True)
+    st.caption(f"{int((checklist_df['Application Assessment'] == 'MANUAL REVIEW REQUIRED').sum())} review points flagged for manual review out of {len(checklist_df)} total points.")
+    st.download_button("Download review checklist (CSV)", checklist_df.to_csv(index=False).encode("utf-8-sig"), "drawing_revision_review_checklist.csv", "text/csv")
+    html_report = _make_html_report(changes,page_summary,checklist,old_doc,new_doc)
+    pdf_report = _make_pdf_report(changes,page_summary,checklist,old_doc,new_doc)
     x,y = st.columns(2)
     x.download_button("Download HTML report",html_report.encode("utf-8"),"drawing_revision_report.html","text/html",use_container_width=True)
     y.download_button("Download PDF report",pdf_report,"drawing_revision_report.pdf","application/pdf",use_container_width=True)
     with st.expander("Text extraction diagnostics"):
-        st.write("PyMuPDF extracts PDF text. Revision-table detection is keyword-based and may include nearby notes.")
+        st.write("PyMuPDF extracts native PDF text. Optional OCR uses the installed Tesseract engine on pages with no or very little native text. Revision-table detection is keyword-based and may include nearby notes. The comparison is order-independent for text lines but still does not compare drawing geometry.")
         diag=[]
         for label,doc in [("Original",old_doc),("Revised",new_doc)]:
             for p in doc["pages"]:
-                diag.append({"Document":label,"Page":p["page"],"Extractable text":p["is_textual"],"Lines extracted":len(p["lines"]),"Page size (PDF points)":f"{p['width']} × {p['height']}"})
+                diag.append({"Document":label,"Page":p["page"],"Native text":p.get("native_textual", p["is_textual"]),"OCR used":p.get("ocr_used", False),"OCR attempted":p.get("ocr_attempted", False),"OCR error":p.get("ocr_error", ""),"Extractable text":p["is_textual"],"Lines extracted":len(p["lines"]),"Page size (PDF points)":f"{p['width']} × {p['height']}"})
         st.dataframe(pd.DataFrame(diag),use_container_width=True,hide_index=True)
