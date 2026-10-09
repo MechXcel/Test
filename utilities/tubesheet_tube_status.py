@@ -9,7 +9,7 @@ ORIGINAL_ROWS = [12, 23, 32, 37, 42, 47, 50, 53, 58, 61, 64, 66, 68, 71, 74, 75,
 
 
 def defaults():
-    return {"rows": [12 + i * 3 for i in range(12)], "tube_od": 25.4, "statuses": {}}
+    return {"rows": [8, 15, 18, 21, 24, 25, 26, 27, 28, 29, 29, 30, 29, 29, 28, 27, 26, 25, 24, 21, 18, 15, 8], "tube_od": 25.4, "statuses": {}}
 
 
 def run():
