@@ -1,6 +1,7 @@
 import math
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 
 def run():
@@ -41,7 +42,24 @@ def run():
     )
     st.markdown("#### Cutout profile")
     st.caption(f"Shell: {shell:g} · Nozzle: {nozzle:g} · Points: {len(df)}")
-    st.line_chart(df.set_index("X")[["Y"]], height=400)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["X"],
+        y=df["Y"],
+        mode="lines",
+        line=dict(width=2),
+        fill="toself",
+        name="Cutout Profile",
+    ))
+    fig.update_layout(
+        height=480,
+        xaxis_title="X",
+        yaxis_title="Y",
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
     st.markdown("#### Spline coordinates")
     spline = "\n".join(f"{x:.6f},{y:.6f}" for x, y in zip(df["X"], df["Y"]))
     st.text_area("Copy spline coordinates", spline, height=140, key="nc_spline")
