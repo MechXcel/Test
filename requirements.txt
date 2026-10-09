@@ -4,3 +4,4 @@ matplotlib>=3.7
 plotly
 PyMuPDF>=1.24
 reportlab>=4.0
+rapidocr-onnxruntime>=1.3.0
