@@ -33,6 +33,7 @@ def run():
         if a >= 360:
             break
     df = pd.DataFrame(rows)
+    df = df.sort_values("Nozzle Angle (°)").reset_index(drop=True)
     df["Spline"] = df.apply(
         lambda row: f"{row['X']:.6f}".rstrip("0").rstrip(".") + "," +
                     f"{row['Y']:.6f}".rstrip("0").rstrip("."),
