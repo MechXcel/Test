@@ -1,10 +1,16 @@
-# MechXcel Utilities
+# MechXcel Engineering Utilities — Drawing Comparator V1
 
-A Streamlit app containing native Python implementations of engineering utilities. The app does not depend on standalone HTML utility files.
+Adds a **Drawing Revision Comparator** as a separate utility module. The existing Nozzle Cutout Generator and Tubesheet Tube Status modules are retained and remain available in the menu.
 
-## Utilities
-- **Nozzle Cutout Generator** — generates a nozzle-to-shell profile, displays coordinates, and exports CSV.
-- **Tubesheet Tube Status** — defines tubesheet rows, assigns tube status by row/range, displays the layout, and exports/imports project data.
+## V1 features
+- Upload original and revised PDFs.
+- Extract text page-by-page with PyMuPDF.
+- Report added, deleted and likely modified text entries.
+- Compare page-level text and page counts.
+- Heuristically extract revision-table-related text using keywords.
+- Show extraction diagnostics and warn when pages have no extractable text.
+- Engineering review checklist.
+- Download CSV change register, HTML report and PDF report.
 
 ## Run locally
 
@@ -13,10 +19,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Add a future utility
-1. Create a Python module in `utilities/` with a `run()` function.
-2. Import it in `app.py`.
-3. Add its name and description to `UTILITIES` and add a navigation branch that calls its `run()` function.
+## Important limitations
+This is a text-based V1. It does not compare vector geometry or visual page content. Scanned pages, graphical dimensions/symbols, layout shifts and text extraction order can cause missed changes or noise. Revision-table detection is heuristic. A human reviewer must verify the drawings; the report is not a certification of completeness or code compliance.
 
-Prepared by Himanshu Bhatt · MechXcel
-https://oss.mechxcel.in
+## Files changed/added in this package
+- `utilities/drawing_revision_comparator.py` — new tool.
+- `app.py` — adds the new import, navigation entry and home card while retaining the two existing tools.
+- `requirements.txt` — adds PyMuPDF and ReportLab.
+
+Prepared by Himanshu Bhatt · MechXcel · https://oss.mechxcel.in

@@ -1,1 +1,1 @@
-"""MechXcel native Python utility modules."""
+"""MechXcel engineering utilities."""
