@@ -33,7 +33,11 @@ def run():
         if a >= 360:
             break
     df = pd.DataFrame(rows)
-    df["Spline"] = df.apply(lambda row: f"{row['X']:.6f},{row['Y']:.6f}".rstrip("0").rstrip("."), axis=1)
+    df["Spline"] = df.apply(
+        lambda row: f"{row['X']:.6f}".rstrip("0").rstrip(".") + "," +
+                    f"{row['Y']:.6f}".rstrip("0").rstrip("."),
+        axis=1
+    )
     st.markdown("#### Cutout profile")
     st.caption(f"Shell: {shell:g} · Nozzle: {nozzle:g} · Points: {len(df)}")
     st.line_chart(df.set_index("X")[["Y"]], height=400)
