@@ -1,30 +1,32 @@
-# MechXcel Engineering Utilities — Drawing Comparator V1
+# MechXcel Engineering Utilities
 
-Adds a **Drawing Revision Comparator** as a separate utility module. The existing Nozzle Cutout Generator and Tubesheet Tube Status modules are retained and remain available in the menu.
+The main page is now a simple landing page; individual applications appear only in the left sidebar to avoid duplicated app listings.
 
-## V1 features
-- Upload original and revised PDFs.
-- Extract text page-by-page with PyMuPDF.
-- Report added, deleted and likely modified text entries.
-- Compare page-level text and page counts.
-- Heuristically extract revision-table-related text using keywords.
-- Show extraction diagnostics and warn when pages have no extractable text.
-- Engineering review checklist.
-- Download CSV change register, HTML report and PDF report.
+## Applications
 
-## Run locally
+- Nozzle Cutout Generator
+- Tubesheet Tube Status
+- Drawing Revision Comparator
+- Knowledge Desk (RAG)
 
-```bash
-pip install -r requirements.txt
+## Run on Windows
+
+Activate the existing virtual environment, then from the repository root run:
+
+```bat
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Important limitations
-This is a text-based V1. It does not compare vector geometry or visual page content. Scanned pages, graphical dimensions/symbols, layout shifts and text extraction order can cause missed changes or noise. Revision-table detection is heuristic. A human reviewer must verify the drawings; the report is not a certification of completeness or code compliance.
+## Knowledge Desk (RAG)
 
-## Files changed/added in this package
-- `utilities/drawing_revision_comparator.py` — new tool.
-- `app.py` — adds the new import, navigation entry and home card while retaining the two existing tools.
-- `requirements.txt` — adds PyMuPDF and ReportLab.
+The RAG utility is an independent, lightweight Streamlit implementation inspired by the general document-chat workflow of Kotaemon. It is not a feature-complete port and does not include Kotaemon's internal code.
 
-Prepared by Himanshu Bhatt · MechXcel · https://oss.mechxcel.in
+- PDF, TXT and Markdown ingestion
+- SQLite persistence under `data/rag_demo.sqlite3`
+- TF-IDF lexical retrieval; no embedding model or vector database download
+- Source passages, page references and retrieval trace
+- Optional generation through a locally running Ollama instance
+- Editable prompt and retrieval parameters
+
+Ollama is optional. Choose **Context extract (no LLM)** to test retrieval without an LLM. Scanned PDF OCR, dense vector embeddings, hybrid search, reranking and PDF highlight preview are not included in this lightweight version.
