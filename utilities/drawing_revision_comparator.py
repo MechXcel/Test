@@ -13,6 +13,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
+TITLE = "Drawing Revision Comparator"
+ICON = "⇄"
+DESCRIPTION = "Compare two PDF drawing revisions and prepare a review report."
+
 MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_PAGES = 500
 CHANGE_COLUMNS = ["Change Type", "Scope", "Old Page", "New Page", "Original Text", "Revised Text", "Review Status"]
