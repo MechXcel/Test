@@ -4,6 +4,10 @@ This is an independent implementation, not a port of Kotaemon's internal code.
 Optimized for a small Windows machine: SQLite + TF-IDF retrieval by default and
 optional Ollama generation. It ingests text-based PDFs and TXT/MD files.
 """
+TITLE = "Knowledge Desk (RAG)"
+ICON = "📚"
+DESCRIPTION = "Chat with your documents, inspect retrieved passages, and test a local RAG workflow."
+
 from __future__ import annotations
 
 import hashlib
