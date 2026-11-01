@@ -4,6 +4,10 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
+TITLE = "Tubesheet Tube Status"
+ICON = "▦"
+DESCRIPTION = "Visualize a tubesheet and track tube work status."
+
 COLORS = {
     "None": "#ff0000",
     "Root weld": "#ff8c00",
