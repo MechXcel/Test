@@ -3,11 +3,9 @@ import utilities
 import pkgutil
 import importlib
 
-""" add this in any next utility
-TITLE = "Tool Display Name"
-ICON = "⚙️"
-DESCRIPTION = "Short description of what this engineering tool does."
-"""
+# TITLE = "Tool Display Name"
+# ICON = "⚙️"
+# DESCRIPTION = "Short description of what this engineering tool does."
 
 st.set_page_config(page_title="MechXcel Utilities", page_icon="⚙️", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
