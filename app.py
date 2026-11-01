@@ -22,18 +22,20 @@ def load_utilities():
     discovered = {}
     for _, module_name, is_pkg in pkgutil.iter_modules(utilities.__path__):
         if not is_pkg and not module_name.startswith("_"):
-            mod = importlib.import_module(f"utilities.{module_name}")
-            if hasattr(mod, "run"):
-                # Fallbacks if metadata is not explicitly defined in the file
-                title = getattr(mod, "TITLE", module_name.replace("_", " ").title())
-                icon = getattr(mod, "ICON", "⚙️")
-                description = getattr(mod, "DESCRIPTION", "")
-                
-                discovered[title] = {
-                    "icon": icon,
-                    "description": description,
-                    "module": mod
-                }
+            try:
+                mod = importlib.import_module(f"utilities.{module_name}")
+                if hasattr(mod, "run"):
+                    title = getattr(mod, "TITLE", module_name.replace("_", " ").title())
+                    icon = getattr(mod, "ICON", "⚙️")
+                    description = getattr(mod, "DESCRIPTION", "")
+                    
+                    discovered[title] = {
+                        "icon": icon,
+                        "description": description,
+                        "module": mod
+                    }
+            except Exception as e:
+                st.error(f"⚠️ Error loading utility file: utilities/{module_name}.py\n\n{e}")
     return discovered
 
 UTILITIES = load_utilities()
