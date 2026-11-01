@@ -19,7 +19,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 TITLE = "Knowledge Desk (RAG)"
 ICON = "📚"
-DESCRIPTION = "Chat with your documents, inspect retrieved passages, and test a local RAG workflow."
+DESCRIPTION = "Upload documents in left sidebar. Chat with documents, inspect retrieved passages, and test a local RAG workflow."
 
 APP_TITLE = "MechXcel Knowledge Desk"
 SUPPORTED = {"pdf", "txt", "md"}
@@ -359,4 +359,4 @@ def run():
             st.metric("Passages retrieved", sum(x["retrieved"] for x in events))
 
     st.divider()
-    st.caption("MechXcel Knowledge Desk · In-memory session demo.")
+    st.caption("MechXcel Knowledge Desk · Demo: All files are available in current session only. Refresh will loose it. No files are stored or sent to MechXcel. However, we recommend not to upload any confidential data here.")
