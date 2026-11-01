@@ -4,12 +4,7 @@ This is an independent implementation, not a port of Kotaemon's internal code.
 Optimized for a small Windows machine: SQLite + TF-IDF retrieval by default and
 optional Ollama generation. It ingests text-based PDFs and TXT/MD files.
 """
-TITLE = "Knowledge Desk (RAG)"
-ICON = "📚"
-DESCRIPTION = "Chat with your documents, inspect retrieved passages, and test a local RAG workflow."
-
 from __future__ import annotations
-
 import hashlib
 import io
 import json
@@ -23,6 +18,10 @@ import streamlit as st
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+TITLE = "Knowledge Desk (RAG)"
+ICON = "📚"
+DESCRIPTION = "Chat with your documents, inspect retrieved passages, and test a local RAG workflow."
 
 APP_TITLE = "MechXcel Knowledge Desk"
 # Keep persistent RAG data in the repository-level data directory.
