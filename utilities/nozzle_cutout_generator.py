@@ -3,6 +3,9 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+TITLE = "Nozzle Cutout Generator"
+ICON = "◉"
+DESCRIPTION = "Generate nozzle-to-shell cutout profiles and spline coordinates."
 
 def run():
     st.subheader("Inputs")
